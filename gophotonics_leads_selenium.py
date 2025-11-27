@@ -401,12 +401,16 @@ def sync_to_google_sheets(master_file: Path) -> None:
         # Read master file
         df = pd.read_csv(master_file)
         
+        # Replace NaN values with empty strings for JSON compatibility
+        df = df.fillna('')
+        
         # Clear existing data
         worksheet.clear()
         
         # Update with new data (including headers)
         data = [df.columns.tolist()] + df.values.tolist()
-        worksheet.update('A1', data)
+        # Use new API format: values first, then range
+        worksheet.update(values=data, range_name='A1')
         
         # Format header row
         worksheet.format('A1:M1', {
