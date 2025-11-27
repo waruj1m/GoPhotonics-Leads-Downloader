@@ -5,6 +5,9 @@
 selenium_downloads/
 leads_downloads/
 
+# Master lead file (contains sensitive data)
+gophotonics_master_leads.csv
+
 # Debug files
 selenium_debug_*.html
 control_panel.html

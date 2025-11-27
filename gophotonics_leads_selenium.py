@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-GoPhotonics Lead Scraper
-Automates downloading and converting lead data from the GoPhotonics manufacturer panel.
+GoPhotonics Lead Scraper with Master File Consolidation
+Automates downloading lead data and consolidates into a single master file for CRM import.
 """
 
 import os
@@ -10,6 +10,7 @@ import time
 import re
 from pathlib import Path
 from typing import List
+from datetime import datetime
 
 import pandas as pd  # type: ignore
 from selenium import webdriver  # type: ignore
@@ -40,6 +41,8 @@ if not EMAIL or not PASSWORD:
 BASE_URL = "https://gophotonics.com/manufacturer/control-panel"
 DOWNLOAD_DIR = Path(__file__).resolve().parent / "selenium_downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+MASTER_FILE = Path(__file__).resolve().parent / "gophotonics_master_leads.csv"
 
 
 def setup_driver(download_dir: Path) -> webdriver.Chrome:
@@ -212,6 +215,157 @@ def convert_downloads_to_csv(download_dir: Path) -> None:
             print(f"  Failed to convert {xlsx_path.name}: {exc}")
 
 
+def consolidate_leads(download_dir: Path, master_file: Path) -> None:
+    """
+    Consolidate all lead CSVs into a single master file with deduplication.
+    Tracks source (datasheet/whitepaper) and prevents duplicate entries.
+    """
+    print("\nConsolidating leads into master file...")
+    
+    # Load existing master file if it exists
+    if master_file.exists():
+        print(f"  Loading existing master file: {master_file.name}")
+        master_df = pd.read_csv(master_file)
+        initial_count = len(master_df)
+        print(f"  Existing leads: {initial_count}")
+    else:
+        print("  Creating new master file...")
+        master_df = pd.DataFrame()
+        initial_count = 0
+    
+    # Process all CSV files
+    csv_files = list(download_dir.glob("*.csv"))
+    print(f"  Processing {len(csv_files)} CSV file(s)...")
+    
+    all_leads = []
+    
+    for csv_file in csv_files:
+        try:
+            # Determine source type from filename
+            filename = csv_file.stem
+            if "datasheet" in filename.lower() or "data_sheet" in filename.lower():
+                source_type = "Datasheet"
+            elif "whitepaper" in filename.lower():
+                source_type = "Whitepaper"
+            elif "quotation" in filename.lower():
+                source_type = "Quotation"
+            elif "inquiry" in filename.lower() or "contact" in filename.lower():
+                source_type = "Contact Inquiry"
+            else:
+                source_type = "Other"
+            
+            df = pd.read_csv(csv_file)
+            
+            # Normalize column names and add source tracking
+            normalized_data = []
+            
+            for _, row in df.iterrows():
+                lead = {}
+                
+                # Helper function to safely extract and clean string values
+                def safe_str(value):
+                    if pd.isna(value) or value is None:
+                        return ''
+                    return str(value).strip()
+                
+                # Extract and normalize contact information
+                lead['email'] = safe_str(row.get('User Email', row.get('email', '')))
+                lead['name'] = safe_str(row.get('User Name', row.get('name', '')))
+                lead['company'] = safe_str(row.get('User Company', row.get('company', '')))
+                lead['phone'] = safe_str(row.get('User Telephone', row.get('telephone', row.get('phone', ''))))
+                lead['country'] = safe_str(row.get('User Country', row.get('country', '')))
+                lead['state'] = safe_str(row.get('User State', row.get('state', '')))
+                lead['city'] = safe_str(row.get('User City', row.get('city', '')))
+                lead['address'] = safe_str(row.get('User Address', row.get('address', '')))
+                
+                # Extract download/access date
+                downloaded_on = row.get('Downloaded On', row.get('downloaded_on', ''))
+                lead['date'] = safe_str(downloaded_on)
+                
+                # Extract resource information
+                if 'Part Number' in row:
+                    lead['resource'] = safe_str(row.get('Part Number', ''))
+                elif 'White Paper Title' in row:
+                    lead['resource'] = safe_str(row.get('White Paper Title', ''))
+                elif 'Product Url' in row:
+                    url = safe_str(row.get('Product Url', ''))
+                    lead['resource'] = url.split('/')[-1] if url else ''
+                else:
+                    lead['resource'] = ''
+                
+                lead['source_type'] = source_type
+                lead['source_file'] = csv_file.name
+                lead['imported_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Only add if email exists
+                if lead['email']:
+                    normalized_data.append(lead)
+            
+            if normalized_data:
+                all_leads.extend(normalized_data)
+                print(f"    ✓ Processed {csv_file.name}: {len(normalized_data)} leads")
+            
+        except Exception as e:
+            print(f"    ✗ Error processing {csv_file.name}: {e}")
+    
+    if not all_leads:
+        print("  No new leads found in CSV files")
+        return
+    
+    # Create DataFrame from new leads
+    new_leads_df = pd.DataFrame(all_leads)
+    
+    # Combine with existing master
+    if not master_df.empty:
+        combined_df = pd.concat([master_df, new_leads_df], ignore_index=True)
+    else:
+        combined_df = new_leads_df
+    
+    # Deduplicate based on email + date + resource (same person downloading same thing on same day)
+    # Keep the first occurrence
+    print("  Deduplicating leads...")
+    before_dedup = len(combined_df)
+    combined_df = combined_df.drop_duplicates(subset=['email', 'date', 'resource'], keep='first')
+    after_dedup = len(combined_df)
+    duplicates_removed = before_dedup - after_dedup
+    
+    if duplicates_removed > 0:
+        print(f"  Removed {duplicates_removed} duplicate(s)")
+    
+    # Sort by date (most recent first)
+    combined_df['date_parsed'] = pd.to_datetime(combined_df['date'], errors='coerce')
+    combined_df = combined_df.sort_values('date_parsed', ascending=False)
+    combined_df = combined_df.drop('date_parsed', axis=1)
+    
+    # Save master file
+    combined_df.to_csv(master_file, index=False)
+    
+    new_leads_count = len(combined_df) - initial_count
+    print(f"\n  ✓ Master file updated: {master_file.name}")
+    print(f"  Total leads: {len(combined_df)}")
+    print(f"  New leads added: {new_leads_count}")
+    
+    # Create summary report
+    print("\n  Lead Summary by Source Type:")
+    for source_type in combined_df['source_type'].unique():
+        count = len(combined_df[combined_df['source_type'] == source_type])
+        print(f"    - {source_type}: {count} leads")
+
+
+def cleanup_old_files(download_dir: Path, keep_days: int = 7) -> None:
+    """Remove old downloaded files to save space (optional cleanup)."""
+    cutoff_time = time.time() - (keep_days * 24 * 60 * 60)
+    removed_count = 0
+    
+    for file_path in download_dir.glob("*"):
+        if file_path.stat().st_mtime < cutoff_time:
+            file_path.unlink()
+            removed_count += 1
+    
+    if removed_count > 0:
+        print(f"\n  Cleaned up {removed_count} old file(s) (>{keep_days} days)")
+
+
 def main() -> None:
     driver = setup_driver(DOWNLOAD_DIR)
     try:
@@ -224,7 +378,14 @@ def main() -> None:
         print("\nConverting downloads to CSV...")
         convert_downloads_to_csv(DOWNLOAD_DIR)
         
-        print("\n✓ Done! Check the selenium_downloads folder for your files.")
+        print("\nConsolidating leads into master file...")
+        consolidate_leads(DOWNLOAD_DIR, MASTER_FILE)
+        
+        # Optional: cleanup old files
+        # cleanup_old_files(DOWNLOAD_DIR, keep_days=7)
+        
+        print(f"\n✓ Done! Master file ready for CRM import: {MASTER_FILE.name}")
+        
     finally:
         driver.quit()
 
