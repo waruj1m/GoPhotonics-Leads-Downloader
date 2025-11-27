@@ -22,6 +22,13 @@ from selenium.webdriver.support import expected_conditions as EC  # type: ignore
 from webdriver_manager.chrome import ChromeDriverManager  # type: ignore
 
 try:
+    import gspread  # type: ignore
+    from google.oauth2.service_account import Credentials  # type: ignore
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    GSPREAD_AVAILABLE = False
+
+try:
     from dotenv import load_dotenv  # type: ignore
     ENV_PATH = Path(__file__).resolve().parent / ".env"
     if ENV_PATH.exists():
@@ -352,6 +359,72 @@ def consolidate_leads(download_dir: Path, master_file: Path) -> None:
         print(f"    - {source_type}: {count} leads")
 
 
+def sync_to_google_sheets(master_file: Path) -> None:
+    """
+    Sync master leads file to Google Sheets.
+    Requires google-auth and gspread packages.
+    """
+    if not GSPREAD_AVAILABLE:
+        print("\n⚠ Google Sheets sync not available")
+        print("  Install with: pip install gspread google-auth")
+        return
+    
+    # Check for credentials file
+    creds_file = Path(__file__).resolve().parent / "google_credentials.json"
+    if not creds_file.exists():
+        print("\n⚠ Google Sheets sync skipped")
+        print("  Create google_credentials.json to enable (see README)")
+        return
+    
+    # Get sheet ID from environment or .env
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        print("\n⚠ Google Sheets sync skipped")
+        print("  Set GOOGLE_SHEET_ID in .env file (see README)")
+        return
+    
+    try:
+        print("\nSyncing to Google Sheets...")
+        
+        # Set up credentials
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = Credentials.from_service_account_file(str(creds_file), scopes=scopes)
+        client = gspread.authorize(creds)
+        
+        # Open the sheet
+        sheet = client.open_by_key(sheet_id)
+        worksheet = sheet.get_worksheet(0)  # First sheet
+        
+        # Read master file
+        df = pd.read_csv(master_file)
+        
+        # Clear existing data
+        worksheet.clear()
+        
+        # Update with new data (including headers)
+        data = [df.columns.tolist()] + df.values.tolist()
+        worksheet.update('A1', data)
+        
+        # Format header row
+        worksheet.format('A1:M1', {
+            "backgroundColor": {"red": 0.2, "green": 0.2, "blue": 0.2},
+            "textFormat": {"foregroundColor": {"red": 1, "green": 1, "blue": 1}, "bold": True}
+        })
+        
+        # Freeze header row
+        worksheet.freeze(rows=1)
+        
+        print(f"  ✓ Synced {len(df)} leads to Google Sheets")
+        print(f"  📊 View at: https://docs.google.com/spreadsheets/d/{sheet_id}")
+        
+    except Exception as e:
+        print(f"  ✗ Error syncing to Google Sheets: {e}")
+        print("  💡 Check credentials and sheet permissions")
+
+
 def cleanup_old_files(download_dir: Path, keep_days: int = 7) -> None:
     """Remove old downloaded files to save space (optional cleanup)."""
     cutoff_time = time.time() - (keep_days * 24 * 60 * 60)
@@ -380,6 +453,9 @@ def main() -> None:
         
         print("\nConsolidating leads into master file...")
         consolidate_leads(DOWNLOAD_DIR, MASTER_FILE)
+        
+        # Sync to Google Sheets
+        sync_to_google_sheets(MASTER_FILE)
         
         # Optional: cleanup old files
         # cleanup_old_files(DOWNLOAD_DIR, keep_days=7)

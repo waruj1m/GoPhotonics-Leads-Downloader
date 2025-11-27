@@ -24,6 +24,14 @@ This script automates the complete lead management workflow:
 - Records source type (Datasheet, Whitepaper, Quotation, Contact Inquiry)
 - Timestamp when imported
 
+### Google Sheets Integration 🆕
+- **Automatic cloud sync** to Google Sheets
+- Accessible from anywhere, on any device
+- Real-time collaboration with team
+- Formatted headers and frozen rows
+- Secure service account authentication
+- **[Setup Guide](GOOGLE_SHEETS_SETUP.md)** (10 minutes)
+
 ### Intelligent Deduplication
 - Prevents duplicate entries based on: email + date + resource
 - Same person downloading the same content on the same day = one entry
@@ -90,6 +98,25 @@ The script will:
 - Open Chrome browser
 - Log in and export all leads
 - Consolidate into `gophotonics_master_leads.csv`
+- **Sync to Google Sheets** (if configured)
+
+### Google Sheets Setup (Optional but Recommended)
+
+For cloud access and team collaboration:
+
+1. **Install packages:**
+   ```bash
+   pip install gspread google-auth
+   ```
+
+2. **Follow the setup guide:** [GOOGLE_SHEETS_SETUP.md](GOOGLE_SHEETS_SETUP.md)
+
+3. **Add to `.env`:**
+   ```
+   GOOGLE_SHEET_ID=your_sheet_id_here
+   ```
+
+4. **Run script** - leads automatically sync to Google Sheets!
 
 ### Output Files
 

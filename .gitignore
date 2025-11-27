@@ -1,5 +1,6 @@
 # Credentials
 .env
+google_credentials.json
 
 # Downloaded files
 selenium_downloads/
