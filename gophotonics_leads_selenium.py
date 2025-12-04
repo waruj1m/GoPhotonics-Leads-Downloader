@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import re
+import requests
 from pathlib import Path
 from typing import List
 from datetime import datetime
@@ -27,6 +28,13 @@ try:
     GSPREAD_AVAILABLE = True
 except ImportError:
     GSPREAD_AVAILABLE = False
+
+try:
+    from hubspot import HubSpot  # type: ignore
+    from hubspot.crm.contacts import SimplePublicObjectInputForCreate, ApiException  # type: ignore
+    HUBSPOT_AVAILABLE = True
+except ImportError:
+    HUBSPOT_AVAILABLE = False
 
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -429,6 +437,195 @@ def sync_to_google_sheets(master_file: Path) -> None:
         print("  💡 Check credentials and sheet permissions")
 
 
+def add_contact_to_static_list(contact_id: str, list_id: str, access_token: str) -> bool:
+    """
+    Add a contact to a HubSpot static list using the v1 Lists API.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        # Ensure contact_id is numeric
+        contact_vid = int(contact_id)
+        
+        url = f"https://api.hubapi.com/contacts/v1/lists/{list_id}/add"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        payload = {"vids": [contact_vid]}
+        
+        response = requests.post(url, json=payload, headers=headers)
+        
+        if response.status_code in (200, 204):
+            return True
+        else:
+            print(f"    ⚠ List add failed (HTTP {response.status_code}): {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"    ⚠ Error adding to list: {e}")
+        return False
+
+
+def sync_to_hubspot(master_file: Path) -> None:
+    """
+    Sync master leads file to HubSpot CRM.
+    Creates or updates contacts and marks them with google_sheet_sync property.
+    Requires hubspot-api-client package.
+    """
+    if not HUBSPOT_AVAILABLE:
+        print("\n⚠ HubSpot sync not available")
+        print("  Install with: pip install hubspot-api-client")
+        return
+    
+    # Get HubSpot API key from environment
+    hubspot_api_key = os.environ.get("HUBSPOT_API_KEY")
+    if not hubspot_api_key:
+        print("\n⚠ HubSpot sync skipped")
+        print("  Set HUBSPOT_API_KEY in .env file")
+        return
+    
+    # Get HubSpot list ID from environment
+    hubspot_list_id = os.environ.get("HUBSPOT_LIST_ID")
+    
+    try:
+        print("\nSyncing to HubSpot CRM...")
+        
+        # Initialize HubSpot client
+        hubspot = HubSpot(access_token=hubspot_api_key)
+        
+        # Read master file
+        df = pd.read_csv(master_file)
+        
+        # Replace NaN values with empty strings
+        df = df.fillna('')
+        
+        success_count = 0
+        update_count = 0
+        create_count = 0
+        error_count = 0
+        list_add_count = 0
+        
+        print(f"  Processing {len(df)} contact(s)...")
+        
+        for idx, row in df.iterrows():
+            email = str(row.get('email', '')).strip()
+            if not email:
+                continue
+            
+            try:
+                # Prepare HubSpot properties
+                name_parts = str(row.get('name', '')).strip().split()
+                firstname = name_parts[0] if name_parts else ''
+                lastname = ' '.join(name_parts[1:]) if len(name_parts) > 1 else ''
+                
+                # US states that HubSpot accepts
+                us_states = {
+                    'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado',
+                    'Connecticut', 'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho',
+                    'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky', 'Louisiana',
+                    'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota',
+                    'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada',
+                    'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
+                    'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon',
+                    'Pennsylvania', 'Rhode Island', 'South Carolina', 'South Dakota',
+                    'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington',
+                    'West Virginia', 'Wisconsin', 'Wyoming'
+                }
+                
+                state_value = str(row.get('state', '')).strip()
+                country_value = str(row.get('country', '')).strip()
+                
+                hubspot_props = {
+                    'email': email,
+                    'firstname': firstname,
+                    'lastname': lastname,
+                    'company': str(row.get('company', '')).strip(),
+                    'phone': str(row.get('phone', '')).strip(),
+                    'country': country_value,
+                    'city': str(row.get('city', '')).strip(),
+                    'address': str(row.get('address', '')).strip(),
+                }
+                
+                # Handle state/region based on whether it's a US state or not
+                if state_value:
+                    if state_value in us_states:
+                        # US state - use 'state' field
+                        hubspot_props['state'] = state_value
+                    else:
+                        # Non-US region/province - use 'state_region' field
+                        hubspot_props['state_region'] = state_value
+                
+                # Remove empty values
+                hubspot_props = {k: v for k, v in hubspot_props.items() if v}
+                
+                # Check if contact exists
+                try:
+                    response = hubspot.crm.contacts.search_api.do_search(
+                        public_object_search_request={
+                            "filterGroups": [{
+                                "filters": [{
+                                    "propertyName": "email",
+                                    "operator": "EQ",
+                                    "value": email
+                                }]
+                            }],
+                            "properties": ["email"],
+                            "limit": 1
+                        }
+                    )
+                    
+                    if response.results:
+                        # Update existing contact
+                        contact_id = response.results[0].id
+                        hubspot.crm.contacts.basic_api.update(
+                            contact_id=contact_id,
+                            simple_public_object_input={"properties": hubspot_props}
+                        )
+                        update_count += 1
+                    else:
+                        # Create new contact
+                        created_contact = hubspot.crm.contacts.basic_api.create(
+                            simple_public_object_input_for_create=SimplePublicObjectInputForCreate(
+                                properties=hubspot_props
+                            )
+                        )
+                        contact_id = created_contact.id
+                        create_count += 1
+                    
+                    success_count += 1
+                    
+                    # Add contact to static list if list ID is configured
+                    if hubspot_list_id:
+                        if add_contact_to_static_list(contact_id, hubspot_list_id, hubspot_api_key):
+                            list_add_count += 1
+                    
+                    # Progress indicator every 10 contacts
+                    if (idx + 1) % 10 == 0:
+                        print(f"    Processed {idx + 1}/{len(df)} contacts...")
+                    
+                except Exception as e:
+                    error_count += 1
+                    if "429" in str(e):  # Rate limit
+                        print(f"    ⚠ Rate limit reached, waiting 10s...")
+                        time.sleep(10)
+                    
+            except Exception as e:
+                error_count += 1
+                print(f"    ✗ Error processing {email}: {e}")
+        
+        print(f"\n  ✓ HubSpot sync completed")
+        print(f"    Created: {create_count} | Updated: {update_count} | Errors: {error_count}")
+        if hubspot_list_id:
+            print(f"    Added to list: {list_add_count}")
+            print(f"\n  💡 Contacts enrolled in HubSpot list ID {hubspot_list_id}")
+        else:
+            print(f"\n  💡 Note: Set HUBSPOT_LIST_ID in .env to add contacts to a static list")
+        
+    except Exception as e:
+        print(f"  ✗ Error syncing to HubSpot: {e}")
+        print("  💡 Check API key and HubSpot account permissions")
+
+
 def cleanup_old_files(download_dir: Path, keep_days: int = 7) -> None:
     """Remove old downloaded files to save space (optional cleanup)."""
     cutoff_time = time.time() - (keep_days * 24 * 60 * 60)
@@ -461,10 +658,13 @@ def main() -> None:
         # Sync to Google Sheets
         sync_to_google_sheets(MASTER_FILE)
         
+        # Sync to HubSpot CRM
+        sync_to_hubspot(MASTER_FILE)
+        
         # Optional: cleanup old files
         # cleanup_old_files(DOWNLOAD_DIR, keep_days=7)
         
-        print(f"\n✓ Done! Master file ready for CRM import: {MASTER_FILE.name}")
+        print(f"\n✓ Done! Master file ready at: {MASTER_FILE.name}")
         
     finally:
         driver.quit()
