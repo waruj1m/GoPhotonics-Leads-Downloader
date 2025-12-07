@@ -133,9 +133,109 @@ For cloud access and team collaboration:
 3. Map fields: `email`, `name`, `company`, etc.
 4. Use `source_type` and `resource` for marketing segmentation
 
-## Automation with Cron
+## Automation
 
-### Daily at 9 AM
+### macOS LaunchAgent (Recommended for Mac)
+
+Run automatically every 24 hours at 11 AM and on system reboot:
+
+1. **The LaunchAgent plist should already be created at:**
+   ```
+   ~/Library/LaunchAgents/com.gophotonics.leads.plist
+   ```
+
+2. **If not, create it with this content:**
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+       <key>Label</key>
+       <string>com.gophotonics.leads</string>
+       
+       <key>ProgramArguments</key>
+       <array>
+           <string>/path/to/gophotonics/.venv/bin/python</string>
+           <string>/path/to/gophotonics/gophotonics_leads_selenium.py</string>
+       </array>
+       
+       <key>WorkingDirectory</key>
+       <string>/path/to/gophotonics</string>
+       
+       <key>StartCalendarInterval</key>
+       <dict>
+           <key>Hour</key>
+           <integer>11</integer>
+           <key>Minute</key>
+           <integer>0</integer>
+       </dict>
+       
+       <key>StandardOutPath</key>
+       <string>/path/to/gophotonics/logs/gophotonics_leads.log</string>
+       
+       <key>StandardErrorPath</key>
+       <string>/path/to/gophotonics/logs/gophotonics_leads.error.log</string>
+       
+       <key>EnvironmentVariables</key>
+       <dict>
+           <key>PATH</key>
+           <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+           <key>GOPHOTONICS_EMAIL</key>
+           <string>your.email@example.com</string>
+           <key>GOPHOTONICS_PASSWORD</key>
+           <string>your_password</string>
+           <!-- Add other env vars from .env file -->
+       </dict>
+       
+       <key>RunAtLoad</key>
+       <false/>
+       
+       <key>KeepAlive</key>
+       <false/>
+   </dict>
+   </plist>
+   ```
+
+3. **Load the service:**
+   ```bash
+   launchctl load ~/Library/LaunchAgents/com.gophotonics.leads.plist
+   ```
+
+4. **Useful commands:**
+   ```bash
+   # Check service status
+   launchctl list | grep gophotonics
+   
+   # View detailed status
+   launchctl list com.gophotonics.leads
+   
+   # Manually trigger now (for testing)
+   launchctl start com.gophotonics.leads
+   
+   # View logs
+   tail -f logs/gophotonics_leads.log
+   tail -f logs/gophotonics_leads.error.log
+   
+   # Stop service
+   launchctl stop com.gophotonics.leads
+   
+   # Disable completely
+   launchctl unload ~/Library/LaunchAgents/com.gophotonics.leads.plist
+   
+   # Reload after making changes
+   launchctl unload ~/Library/LaunchAgents/com.gophotonics.leads.plist
+   launchctl load ~/Library/LaunchAgents/com.gophotonics.leads.plist
+   ```
+
+**Important Notes:**
+- Uses your virtual environment's Python (`.venv/bin/python`)
+- All environment variables from `.env` must be added to the plist
+- Service persists across reboots
+- Logs are stored in `logs/` directory
+
+### Linux/Unix Cron (Alternative)
+
+**Daily at 9 AM:**
 
 ```bash
 crontab -e
@@ -143,7 +243,7 @@ crontab -e
 
 Add:
 ```
-0 9 * * * cd /path/to/gophotonics && python3 gophotonics_leads_selenium.py >> /path/to/logs/gophotonics.log 2>&1
+0 9 * * * cd /path/to/gophotonics && /path/to/gophotonics/.venv/bin/python gophotonics_leads_selenium.py >> /path/to/logs/gophotonics.log 2>&1
 ```
 
 The script safely appends new leads without losing historical data.
