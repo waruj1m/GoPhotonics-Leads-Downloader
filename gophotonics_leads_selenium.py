@@ -74,9 +74,8 @@ def setup_driver(download_dir: Path) -> webdriver.Chrome:
     }
     chrome_options.add_experimental_option("prefs", prefs)
 
-    driver_path = ChromeDriverManager().install()
-    service = Service(driver_path)
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    # Use Selenium's built-in driver management (Selenium 4.6+)
+    driver = webdriver.Chrome(options=chrome_options)
     return driver
 
 
